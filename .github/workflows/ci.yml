@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: "**/*.md"
+
+  links:
+    name: Links and anchors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          # Offline: checks every relative link and heading anchor; external sites are not contacted.
+          args: --offline --no-progress --include-fragments './**/*.md'
+          fail: true
+
+  mermaid:
+    name: Mermaid diagrams render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install mermaid-cli
+        run: npm install --global @mermaid-js/mermaid-cli@11
+      - name: Render every Mermaid block in every Markdown file
+        run: |
+          echo '{"args":["--no-sandbox"]}' > /tmp/puppeteer.json
+          mkdir -p /tmp/mermaid
+          status=0
+          while IFS= read -r file; do
+            if grep -q '^```mermaid' "$file"; then
+              out="/tmp/mermaid/$(echo "$file" | tr '/' '_')"
+              echo "::group::$file"
+              mmdc --quiet -p /tmp/puppeteer.json -i "$file" -o "$out" || status=1
+              echo "::endgroup::"
+            fi
+          done < <(git ls-files '*.md')
+          exit $status
+
+  structurizr:
+    name: C4 model validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Validate workspace.dsl with the Structurizr CLI
+        run: |
+          curl -fsSL -o structurizr-cli.zip https://github.com/structurizr/cli/releases/latest/download/structurizr-cli.zip
+          unzip -q structurizr-cli.zip -d structurizr-cli
+          ./structurizr-cli/structurizr.sh validate -workspace diagrams/structurizr/workspace.dsl
+
+  load-testing:
+    name: k6 against the mock API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: grafana/setup-k6-action@v1
+      - name: Lint shell scripts
+        run: shellcheck load-testing/scripts/*.sh
+      - name: Start the mock API
+        run: |
+          node load-testing/mock-api/server.js > mock-api.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fs http://localhost:8080/health && exit 0
+            sleep 1
+          done
+          cat mock-api.log
+          exit 1
+      - name: Smoke profile
+        run: k6 run --no-usage-report -e PROFILE=smoke -e THINK_MIN_S=0.2 -e THINK_MAX_S=0.5 load-testing/k6/main.js
+      - name: Spike profile at 1 % scale and 3 % duration
+        run: k6 run --no-usage-report -e PROFILE=spike -e SCALE=0.01 -e DURATION_FACTOR=0.03 -e THINK_MIN_S=0.5 -e THINK_MAX_S=1 load-testing/k6/main.js
+      - name: Login storm at 5 % scale
+        run: k6 run --no-usage-report -e PROFILE=login-storm -e SCALE=0.05 load-testing/k6/main.js

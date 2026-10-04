@@ -1,0 +1,15 @@
+# k6 results and exports
+load-testing/results/
+*.csv.gz
+summary*.json
+
+# Structurizr Lite workspace cache
+diagrams/structurizr/.structurizr/
+diagrams/structurizr/workspace.json
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+node_modules/

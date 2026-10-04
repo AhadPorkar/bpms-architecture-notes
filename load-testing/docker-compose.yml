@@ -1,0 +1,44 @@
+# Mock API + k6 in containers.
+#   docker compose up --abort-on-container-exit
+#   PROFILE=spike SCALE=0.02 DURATION_FACTOR=0.05 docker compose up --abort-on-container-exit
+# While a test runs, the k6 web dashboard is available at http://localhost:5665.
+
+services:
+  mock-api:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["node", "server.js"]
+    volumes:
+      - ./mock-api:/app:ro
+    environment:
+      PORT: "8080"
+      MOCK_LATENCY_MS: "${MOCK_LATENCY_MS:-30}"
+      MOCK_ERROR_RATE: "${MOCK_ERROR_RATE:-0}"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  k6:
+    image: grafana/k6:1.3.0
+    depends_on:
+      mock-api:
+        condition: service_healthy
+    command: ["run", "/scripts/main.js"]
+    volumes:
+      - ./k6:/scripts:ro
+    environment:
+      BASE_URL: "http://mock-api:8080"
+      PROFILE: "${PROFILE:-smoke}"
+      SCALE: "${SCALE:-1}"
+      DURATION_FACTOR: "${DURATION_FACTOR:-1}"
+      THINK_MIN_S: "${THINK_MIN_S:-1}"
+      THINK_MAX_S: "${THINK_MAX_S:-3}"
+      K6_NO_USAGE_REPORT: "true"
+      K6_WEB_DASHBOARD: "true"
+      K6_WEB_DASHBOARD_HOST: "0.0.0.0"
+    ports:
+      - "5665:5665"
